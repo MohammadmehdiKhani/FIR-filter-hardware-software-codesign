@@ -1,0 +1,166 @@
+//arm-core
+ipblock myarm 
+{
+	iptype "armsystem";
+	ipparm "exec=main";
+}
+
+ipblock master_req(out data : ns(32)) 
+{
+	iptype "armsystemsource";
+	ipparm "core=myarm";
+	ipparm "address=0x80000000";
+}
+
+ipblock master_ack(in data : ns(32)) 
+{
+	iptype "armsystemsink";
+	ipparm "core=myarm";
+	ipparm "address=0x80000004";
+}
+
+ipblock master_data_out(out data : ns(32)) 
+{
+	iptype "armsystemsource";
+	ipparm "core=myarm";
+	ipparm "address=0x80000008";
+}
+
+ipblock master_data_in(in data : ns(32)) 
+{
+	iptype "armsystemsink";
+	ipparm "core=myarm";
+	ipparm "address=0x8000000C";
+}
+
+dp fir 
+{
+	use myarm;
+
+	sig req : tc(32);
+	sig ack : tc(32);
+	sig data_out : tc(32);
+	sig data_in : tc(32);
+
+	use master_req(req);
+	use master_ack(ack);
+	use master_data_out(data_out);
+	use master_data_in(data_in);
+
+	reg r_req : ns(1);
+	reg r_data_in : tc(32);
+	reg i : tc(10);
+	reg j : tc(10);
+	reg filteredPulse : tc(120);
+
+	lookup coeff : tc(120) = {5460247557719829600000000000000,-8004881711870030,-6416500658676090100000000000000,
+	-10472570535644001000000000000000,-8772581474920759600000000000000,12788601717414099,12765278610623299000000000000000,
+	21858014182866100000000000000000,18656894103009100000000000000000,-23284724501884100,-26751462414624600000000000000000,
+	-44883870122118799000000000000000,-37422196988082601000000000000000,37989532124542797,51158134745953399000000000000000,
+	83974453940786099000000000000000,68645375188532204000000000000000,-54796353056166003,-90914665470718404000000000000000,
+	-147536388082741000000000000000000,-119626104967189010000000000000000,71297372651231898,157664648229160000000000000000000,
+	256998900276193990000000000000000,210528838383762000000000000000000,-85128586627866800,-290097940801829000000000000000000,
+	-492117508516849020000000000000000,-427435305950880020000000000000000,94308478093984005,736794505899311950000000000000000,
+	1579414047477470100000000000000000,2247660658160179900000000000000000,2501734198457409900000000000000000,
+	2247660658160179900000000000000000,1579414047477470100000000000000000,736794505899311950000000000000000,94308478093984005,
+	-427435305950880020000000000000000,-492117508516849020000000000000000,-290097940801829000000000000000000,-85128586627866800,
+	210528838383762000000000000000000,256998900276193990000000000000000,157664648229160000000000000000000,71297372651231898,
+	-119626104967189010000000000000000,-147536388082741000000000000000000,-90914665470718404000000000000000,
+	-54796353056166003,68645375188532204000000000000000,83974453940786099000000000000000,51158134745953399000000000000000,
+	37989532124542797,-37422196988082601000000000000000,-44883870122118799000000000000000,-26751462414624600000000000000000,
+	-23284724501884100,18656894103009100000000000000000,21858014182866100000000000000000,12765278610623299000000000000000,
+	12788601717414099,-8772581474920759600000000000000,-10472570535644001000000000000000,-6416500658676090100000000000000,
+	-8004881711870030,5460247557719829600000000000000};
+
+	lookup pulse : tc(5)={-4,-2,0,-4,-6,-4,-2,-4,-6,-6,-4,-4,-6,-6,-2,6,12,8,0,-16,-38,-60,-84,-90,-66,
+		               -32,-4,2,-4,8,12,12,10,6,6,6,4,0,0,0,0,0,-2,-4,0,0,0,-2,-2,0,0,-2,-2,-2,-2,0,
+		               -2,-4,-2,0,-2,-4,-4,2,0,0,-2,-4,-2,0,0,-2,-4,-2,0,0,-4,-4,-2,-2,-4,-6,-6,-4,-4,
+		               8,-10,-8,-6,-6,-8,-12,-10,-8,-8,-10,-12,-10,-8,-8,-10,-10,-8,-6,-6,-8,-8,-4,-2,
+		               -4,-4,-4,0,0,-2,-4,-2,-2,0,-4};
+
+	always
+	{
+		r_req = req;
+		data_in = r_data_in;
+	}
+
+	sfg start 
+	{ 
+		i = 0; 
+		j = 1; 
+	}
+
+	sfg firstOperation { filteredPulse = pulse(i)*coeff(0); }
+
+	sfg calculate 
+	{ 
+		filteredPulse = filteredPulse + pulse(i-j)*coeff(j);
+		j=j+1; 
+	}
+
+	sfg notice { $display("Pulse have been recieved from SW"); }
+
+	//reset filteredPulse, reset j, increase i
+	sfg goForNextPulse 
+	{ 
+		i=i+1; 
+		j=1; 
+		filteredPulse = 0;
+	}
+
+	sfg printFilteredPulse
+	{
+		$display($dec,"    i = ", i,"     ",filteredPulse);
+	}
+
+	sfg ack0 { ack = 0; }
+	sfg ack1 { ack = 1; }
+
+	sfg sendBackFilteredPulseToSW { r_data_in = filteredPulse; }
+
+	sfg readOnePulseFromSW 
+	{
+		pulse(i) = data_out;
+		i = i+1; 
+	}
+}
+
+fsm controller(fir)
+{
+	initial s0;
+	state s1, s2, s3, s4, s5, s6, s7;
+
+	//read pulse from SW
+	@s0 if(r_req) then (readOnePulseFromSW,ack1) -> s1;
+	else (ack0) -> s0;
+
+	@s1 if(~r_req) then (readOnePulseFromSW,ack0) -> s2;
+	else (ack1) -> s1;
+
+	@s2 if(i==120) then (notice,ack0) -> s3;
+	else (ack0) -> s0;
+
+	//pulse received completely
+	//start computing
+	@s3 (start,ack0) -> s4;
+
+	@s4 if(i<120) then (firstOperation,ack0) -> s5;
+	else (ack0) -> s6;
+
+	//calculate filteredPulse
+	@s5 if((j<67) & (i-j>=0)) then (calculate,ack1) -> s5;
+	//filteredPulse calculated, data will print in console, data will send back tp SW
+	else (goForNextPulse,printFilteredPulse,ack0,sendBackFilteredPulseToSW) -> s7;
+
+	//idle
+	@s6 (ack0) -> s6;
+
+	@s7 if(r_req) then (ack1) -> s4;
+	else (ack0) -> s7;
+
+}
+
+system S 
+{
+	fir;
+}
